@@ -7,30 +7,31 @@
 //! \license Lesser General Public License version 3 or later
 //! \copyright (c) 2014, NICTA
 //!
+
+#include "comms/transport.hpp"
+
 #include <iomanip>
-#include <sstream>
 #include <random>
+#include <sstream>
 
 #include <glog/logging.h>
 
-#include "comms/transport.hpp"
 #include "comms/serial.hpp"
-
 
 namespace stateline
 {
   namespace comms
   {
-    std::string receiveString(zmq::socket_t & socket)
+    std::string receiveString(zmq::socket_t& socket)
     {
-      zmq::message_t message;
-      std::string result = "";
+      std::string result;
       try
       {
+        zmq::message_t message;
         socket.recv(&message);
         result = std::string(static_cast<char*>(message.data()), message.size());
       }
-      catch(const zmq::error_t& e) 
+      catch(const zmq::error_t& e)
       {
         VLOG(1) << "ZMQ receive has thrown with type " << e.what();
         throw;
@@ -38,19 +39,19 @@ namespace stateline
       return result;
     }
 
-    bool sendString(zmq::socket_t & socket, const std::string & string)
+    bool sendString(zmq::socket_t& socket, const std::string& string)
     {
       // Taken from zhelpers.hpp
-      zmq::message_t message(string.size());
+      zmq::message_t message{string.size()};
       memcpy(message.data(), string.data(), string.size());
 
       return socket.send(message);
     }
 
-    bool sendStringPart(zmq::socket_t & socket, const std::string & string)
+    bool sendStringPart(zmq::socket_t& socket, const std::string& string)
     {
       // Taken from zhelpers.hpp
-      zmq::message_t message(string.size());
+      zmq::message_t message{string.size()};
       memcpy(message.data(), string.data(), string.size());
 
       return socket.send(message, ZMQ_SNDMORE);
@@ -58,62 +59,56 @@ namespace stateline
 
     Message receive(zmq::socket_t& socket)
     {
-      std::vector<std::string> address;
-      std::string frame = receiveString(socket);
-      // Do we have an address?
-      while (frame.compare("") != 0)
-      {
-        address.push_back(frame);
-        frame = receiveString(socket);
-      }
+      Address address;
+
+      // Read address frames until we read the "" delimiter.
+      for (auto frame = receiveString(socket); frame != ""; frame = receiveString(socket))
+        address.push_back(std::move(frame));
+
       // address is a stack, so reverse it to get the right way around
-      std::reverse(address.begin(), address.end());
+      std::reverse(std::begin(address), std::end(address.end));
 
       // We've just read the delimiter, so now get subject
       auto subjectString = receiveString(socket);
-      const char* chars = subjectString.c_str();
-      //the underlying representation is (explicitly) an int so fairly safe
-      Subject subject = (Subject)detail::unserialise<std::uint32_t>(subjectString);
+      auto chars = subjectString.c_str();
+
+      // The underlying representation is (explicitly) an int so fairly safe
+      auto subject = (Subject)detail::unserialise<std::uint32_t>(subjectString);
+
+      // Now read the data
       std::vector<std::string> data;
-      while (true)
-      {
-        int isMore = 0;
-        size_t moreSize = sizeof(isMore);
-        socket.getsockopt(ZMQ_RCVMORE, &isMore, &moreSize);
-        if (!isMore)
-          break;
+
+      std::int64_t isMore = 0;
+      std::size_t moreSize = sizeof(isMore);
+      while (socket.getsockopt(ZMQ_RCVMORE, &isMore, &moreSize) == 0 && isMore)
         data.push_back(receiveString(socket));
-      }
-      return Message(address, subject, data);
+
+      return {address, subject, data};
     }
 
     void send(zmq::socket_t& socket, const Message& message)
     {
       // Remember we're using the vector as a stack, so iterate through the
       // address in reverse.
-      for (auto it = message.address.rbegin(); it != message.address.rend(); ++it)
-      {
-        sendStringPart(socket, *it);
-      }
+      std::for_each(message.address.rbegin(), message.address.rend(),
+        [](const std::string& s) { sendStringPart(socket, s); });
 
       // Send delimiter
       sendStringPart(socket, "");
 
       // Send subject, then data if there is any
       auto subjectString = detail::serialise<std::uint32_t>(message.subject);
-      uint dataSize = message.data.size();
+      auto dataSize = message.data.size();
       if (dataSize > 0)
       {
         // The subject
         sendStringPart(socket, subjectString);
 
         // The data -- multipart
-        for (auto it = message.data.begin(); it != std::prev(message.data.end()); ++it)
-        {
-          sendStringPart(socket, *it);
-        }
+        std::for_each(std::begin(message.data), std::prev(std::end(message.data)),
+            [](const std::string& s) { return sendStringPart(socket, s); });
 
-        // final or only part
+        // Final or only part
         sendString(socket, message.data.back());
       }
       else
@@ -123,6 +118,8 @@ namespace stateline
       }
     }
 
+    // TODO: reduce code duplication between this and the lvalue reference version
+    // (maybe just have a single send function which takes by copy, and just move)
     void send(zmq::socket_t& socket, Message&& message)
     {
       // Remember we're using the vector as a stack, so iterate through the
@@ -162,16 +159,15 @@ namespace stateline
     std::string randomSocketID()
     {
       // Inspired by zhelpers.hpp
-      std::random_device rd;
-      std::mt19937 gen(rd());
-      std::uniform_int_distribution<> dis(0, 0x10000);
+      static std::mt19937 gen{std::random_device{}};
+      static std::uniform_int_distribution<> dis{0, 0x10000};
       std::stringstream ss;
       ss << std::hex << std::uppercase << std::setw(4) << std::setfill('0') << dis(gen) << "-" << std::setw(4) << std::setfill('0')
-          << dis(gen);
+        << dis(gen);
       return ss.str();
     }
 
-    void setSocketID(const std::string& id, zmq::socket_t & socket)
+    void setSocketID(const std::string& id, zmq::socket_t& socket)
     {
       socket.setsockopt(ZMQ_IDENTITY, id.c_str(), id.length());
     }
