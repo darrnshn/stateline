@@ -66,11 +66,10 @@ namespace stateline
         address.push_back(std::move(frame));
 
       // address is a stack, so reverse it to get the right way around
-      std::reverse(std::begin(address), std::end(address.end));
+      std::reverse(std::begin(address), std::end(address));
 
       // We've just read the delimiter, so now get subject
       auto subjectString = receiveString(socket);
-      auto chars = subjectString.c_str();
 
       // The underlying representation is (explicitly) an int so fairly safe
       auto subject = (Subject)detail::unserialise<std::uint32_t>(subjectString);
@@ -80,7 +79,7 @@ namespace stateline
 
       std::int64_t isMore = 0;
       std::size_t moreSize = sizeof(isMore);
-      while (socket.getsockopt(ZMQ_RCVMORE, &isMore, &moreSize) == 0 && isMore)
+      while (socket.getsockopt(ZMQ_RCVMORE, &isMore, &moreSize), isMore)
         data.push_back(receiveString(socket));
 
       return {address, subject, data};
@@ -91,7 +90,7 @@ namespace stateline
       // Remember we're using the vector as a stack, so iterate through the
       // address in reverse.
       std::for_each(message.address.rbegin(), message.address.rend(),
-        [](const std::string& s) { sendStringPart(socket, s); });
+        [&](const std::string& s) { sendStringPart(socket, s); });
 
       // Send delimiter
       sendStringPart(socket, "");
@@ -106,7 +105,7 @@ namespace stateline
 
         // The data -- multipart
         std::for_each(std::begin(message.data), std::prev(std::end(message.data)),
-            [](const std::string& s) { return sendStringPart(socket, s); });
+            [&](const std::string& s) { return sendStringPart(socket, s); });
 
         // Final or only part
         sendString(socket, message.data.back());
@@ -159,7 +158,7 @@ namespace stateline
     std::string randomSocketID()
     {
       // Inspired by zhelpers.hpp
-      static std::mt19937 gen{std::random_device{}};
+      static std::mt19937 gen{std::random_device{}()};
       static std::uniform_int_distribution<> dis{0, 0x10000};
       std::stringstream ss;
       ss << std::hex << std::uppercase << std::setw(4) << std::setfill('0') << dis(gen) << "-" << std::setw(4) << std::setfill('0')
